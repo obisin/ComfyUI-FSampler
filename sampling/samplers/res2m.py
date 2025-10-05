@@ -12,6 +12,7 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
                        adaptive_mode="none", smoothing_beta=0.9, smoothed_error_ratio=1.0,
                        learning_ratio=1.0, predictor_type="linear", add_noise_ratio=0.0, add_noise_type="whitened",
                        skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2,
+                       anchor_interval=None, max_consecutive_skips=None,
                        noise_cooldown=0, old_sigma_down=None):
     x_0 = noisy_latent
 
@@ -26,6 +27,13 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
             protect_last_steps=protect_last_steps,
             protect_first_steps=protect_first_steps,
             skip_stats=skip_stats,
+            x_current=x_0,
+            sigma_current=sigma_current,
+            sigma_next=sigma_next,
+            sampler_kind="res_2m",
+            sigma_previous=sigma_previous,
+            anchor_interval=anchor_interval,
+            max_consecutive_skips=max_consecutive_skips,
         )
         skip_method = "adaptive"
     else:
