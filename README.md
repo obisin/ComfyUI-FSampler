@@ -17,7 +17,6 @@ by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) 
 - Works with existing samplers: Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS, RES_Multistep.
 - Stability via a universal learning stabilizer L and strict validators; clear per‑step diagnostics.
 - Since all equations are deterministic, running high skips will still produce very similar results as if ran with no skips menaing you can generate alot more test quicker before using a single seed for production.
-- Very simple extrapolation
 ---
 
 - Open/enlarge the picture below and note how generations change with the more predictions and steps between them. We dont see as much quality loss but rather the direction of where the model goes. Thats not to say there isnt any quality loss but instead this method creates more variations in the image.
