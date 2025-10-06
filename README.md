@@ -127,6 +127,7 @@ A: FSampler is complementary to:
 ---
 
 ## ALL TESTERS WELCOME! THANKS!!1
+---
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G61M09C8)
 
