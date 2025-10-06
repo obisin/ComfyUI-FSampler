@@ -130,7 +130,7 @@ A: FSampler is complementary to:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G61M09C8)
 
-<img width="3000" height="3000" alt="qr-code" src="https://github.com/user-attachments/assets/50949a09-1cc3-4f85-9b8b-b3273f8dc8e5" />
+<img width="150" height="150" alt="qr-code" src="https://github.com/user-attachments/assets/50949a09-1cc3-4f85-9b8b-b3273f8dc8e5" />
 
 
 
