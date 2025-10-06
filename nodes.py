@@ -87,7 +87,7 @@ class FSamplerAdvanced:
                     "tooltip": "Weight adjustment: none=baseline weights only, learning=smoothed weight adaptation based on error history"
                 }),
                 "smoothing_beta": ("FLOAT", {
-                    "default": 0.9,
+                    "default": 0.9990,
                     "min": 0.0,
                     "max": 0.9999,
                     "step": 0.0001,
