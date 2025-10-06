@@ -131,4 +131,5 @@ A: FSampler is complementary to:
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G61M09C8)
 
 
+<img width="54.5" height="15.3" alt="bmc-button" src="https://github.com/user-attachments/assets/a927697f-dabd-46ba-88ac-5b926a5e5a16" />
 
