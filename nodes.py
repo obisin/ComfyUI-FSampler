@@ -5,7 +5,7 @@ import comfy.samplers
 import comfy.utils
 from .comfy_copy import k_diffusion_sampling
 from .sampling.fibonacci_scheduler import get_fsampler_sigmas, FSAMPLER_SCHEDULERS
-from .sampling.sampling_engine import sample_fsampler
+from .sampling.engine import sample_fsampler
 
 
 # Available schedulers
@@ -126,6 +126,9 @@ class FSamplerAdvanced:
                 }),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
                 "verbose": ("BOOLEAN", {"default": False, "tooltip": "Verbose debug logging (per-step sampler details). Timing is always shown."}),
+                # Place control at the bottom as requested
+                "no_grad": ("BOOLEAN", {"default": True, "tooltip": "Run sampling under torch.no_grad (Comfy parity). Disable only for debugging/experiments."}),
+                "official_comfy": ("BOOLEAN", {"default": True, "tooltip": "When enabled, use algorithms that mirror official Comfy samplers/schedulers; when disabled, use res4lyf or other variants."}),
             }
         }
 
@@ -134,21 +137,55 @@ class FSamplerAdvanced:
     CATEGORY = "sampling/custom_sampling"
 
     def sample(self, model, positive, negative, latent_image, seed, steps, cfg,
-               scheduler, sampler, adaptive_mode, smoothing_beta, skip_mode, anchor_interval, max_consecutive_skips, protect_first_steps, protect_last_steps, start_at_step, end_at_step, add_noise, noise_type, denoise, verbose):
+               scheduler, sampler, adaptive_mode, smoothing_beta, skip_mode, anchor_interval, max_consecutive_skips, protect_first_steps, protect_last_steps, start_at_step, end_at_step, add_noise, noise_type, denoise, verbose, no_grad, official_comfy):
         # Build sigma schedule with a factory to mirror KSampler (Advanced) denoise semantics
         def _build_sigmas(n_steps: int):
             if scheduler == "bong_tangent":
-                from .comfy_copy.res4lyf_schedulers import get_bong_tangent_sigmas
-                return get_bong_tangent_sigmas(model, n_steps)
+                # Route based on official_comfy flag
+                if official_comfy:
+                    from .comfy_copy.official_schedulers import get_bong_tangent_sigmas_official
+                    s = get_bong_tangent_sigmas_official(model, n_steps)
+                else:
+                    from .comfy_copy.res4lyf_schedulers import get_bong_tangent_sigmas
+                    s = get_bong_tangent_sigmas(model, n_steps)
+                    # Ensure trailing zero for Comfy parity
+                    try:
+                        if float(s[-1]) != 0.0:
+                            import torch as _torch
+                            s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                    except Exception:
+                        pass
+                return s
             elif scheduler == "bong_tangent_2":
                 from .comfy_copy.res4lyf_schedulers import get_bong_tangent_2_sigmas
-                return get_bong_tangent_2_sigmas(model, n_steps)
+                s = get_bong_tangent_2_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             elif scheduler == "bong_tangent_2_simple":
                 from .comfy_copy.res4lyf_schedulers import get_bong_tangent_2_simple_sigmas
-                return get_bong_tangent_2_simple_sigmas(model, n_steps)
+                s = get_bong_tangent_2_simple_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             elif scheduler == "constant":
                 from .comfy_copy.res4lyf_schedulers import get_constant_sigmas
-                return get_constant_sigmas(model, n_steps)
+                s = get_constant_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             else:
                 return get_sigma_schedule(model, scheduler, n_steps)
 
@@ -233,6 +270,8 @@ class FSamplerAdvanced:
             protect_last_steps=protect_last_steps,
             anchor_interval=anchor_interval,
             max_consecutive_skips=max_consecutive_skips,
+            use_no_grad=bool(no_grad),
+            official_comfy=bool(official_comfy),
         )
 
 
@@ -277,16 +316,44 @@ class FSampler:
         def _build_sigmas(n_steps: int):
             if scheduler == "bong_tangent":
                 from .comfy_copy.res4lyf_schedulers import get_bong_tangent_sigmas
-                return get_bong_tangent_sigmas(model, n_steps)
+                s = get_bong_tangent_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             elif scheduler == "bong_tangent_2":
                 from .comfy_copy.res4lyf_schedulers import get_bong_tangent_2_sigmas
-                return get_bong_tangent_2_sigmas(model, n_steps)
+                s = get_bong_tangent_2_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             elif scheduler == "bong_tangent_2_simple":
                 from .comfy_copy.res4lyf_schedulers import get_bong_tangent_2_simple_sigmas
-                return get_bong_tangent_2_simple_sigmas(model, n_steps)
+                s = get_bong_tangent_2_simple_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             elif scheduler == "constant":
                 from .comfy_copy.res4lyf_schedulers import get_constant_sigmas
-                return get_constant_sigmas(model, n_steps)
+                s = get_constant_sigmas(model, n_steps)
+                try:
+                    if float(s[-1]) != 0.0:
+                        import torch as _torch
+                        s = _torch.cat([s, _torch.tensor([0.0], dtype=s.dtype)])
+                except Exception:
+                    pass
+                return s
             else:
                 return get_sigma_schedule(model, scheduler, n_steps)
 
@@ -349,6 +416,8 @@ class FSampler:
             protect_last_steps=protect_last_steps,
             anchor_interval=anchor_interval,
             max_consecutive_skips=max_consecutive_skips,
+            use_no_grad=True,  # default to Comfy parity in simple node
+            official_comfy=True,
         )
 
         return ({"samples": samples},)
