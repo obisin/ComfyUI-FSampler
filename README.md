@@ -129,5 +129,8 @@ A: FSampler is complementary to:
 ## ALL TESTERS WELCOME! THANKS!!1
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G61M09C8)
-<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="obisin" data-color="#5F7FFF" data-emoji=""  data-font="Poppins" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#ffffff" data-coffee-color="#FFDD00" ></script>
+
+<img width="3000" height="3000" alt="qr-code" src="https://github.com/user-attachments/assets/50949a09-1cc3-4f85-9b8b-b3273f8dc8e5" />
+
+
 
