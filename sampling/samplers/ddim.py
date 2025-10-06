@@ -1,13 +1,14 @@
 import torch
 from ..extrapolation import extrapolate_epsilon_linear, extrapolate_epsilon_richardson, extrapolate_epsilon_h4
 from ...comfy_copy.res4lyf_sampling import get_res4lyf_step_with_model
+from ..noise import get_eps_step_official
 from ..skip import should_skip_model_call, validate_epsilon_hat, decide_skip_adaptive
 from ..log import print_step_diag
 
 
 def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra_args,
                      epsilon_history, learning_ratio, smoothing_beta, predictor_type,
-                     step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", debug=False, protect_last_steps=4, protect_first_steps=2, skip_stats=None, anchor_interval=None, max_consecutive_skips=None):
+                     step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", debug=False, protect_last_steps=4, protect_first_steps=2, skip_stats=None, anchor_interval=None, max_consecutive_skips=None, official_comfy=False):
     x = noisy_latent
 
     if skip_mode == "adaptive":
@@ -90,10 +91,14 @@ def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra
         sigma_up = None
         alpha_ratio = None
         if add_noise_ratio > 0.0 and float(sigma_next) > 0.0:
-            sigma_up, _s, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
-                model, sigma_current, sigma_next, add_noise_ratio, "hard"
-            )
-            target_sigma = sigma_down
+            if official_comfy:
+                sigma_up, sigma_down = get_eps_step_official(sigma_current, sigma_next, eta=add_noise_ratio)
+                target_sigma = sigma_down
+            else:
+                sigma_up, _s, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
+                    model, sigma_current, sigma_next, add_noise_ratio, "hard"
+                )
+                target_sigma = sigma_down
         scale = (target_sigma / sigma_current)
         x = denoised + scale * (x - denoised)
         if skip_stats is not None:
@@ -101,15 +106,13 @@ def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra
             skip_stats["consecutive_skips"] = 0
             skip_stats["last_anchor_step"] = step_index
         if add_noise_ratio > 0.0 and float(sigma_next) > 0.0 and float(sigma_up) > 0.0:
+            noise = torch.randn_like(x)
             if add_noise_type == "whitened":
-                noise = torch.randn_like(x)
                 noise = (noise - noise.mean()) / (noise.std() + 1e-12)
-            else:
-                noise = torch.randn_like(x)
-            if alpha_ratio is not None and alpha_ratio is not True:
-                x = alpha_ratio * x + noise * sigma_up
-            else:
+            if official_comfy or alpha_ratio is None or alpha_ratio is True:
                 x = x + noise * sigma_up
+            else:
+                x = alpha_ratio * x + noise * sigma_up
         epsilon_real = denoised - noisy_latent
         epsilon_history.append(epsilon_real)
         if len(epsilon_history) >= 3:

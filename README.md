@@ -10,13 +10,13 @@ by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) 
 - currently only tested on flux, wan2.2 and qwen- happy for anyone to test and give feedback- I will test on otehrs later. 
 - Testing done on a 2080ti with loras and f8 and f16 models. 
 - The longer a single run on one model the better. Split model like Wan2.2 will see less benefit due to lower step count per model as this leads to less history to predict future values.
-- Runs in place of your regular KSampler node.
 
 ## Overview
 - Training‑free acceleration that skips full model calls using predicted epsilon (noise) from recent REAL steps.
 - Works with existing samplers: Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS, RES_Multistep.
 - Stability via a universal learning stabilizer L and strict validators; clear per‑step diagnostics.
 - Since all equations are deterministic, running high skips will still produce very similar results as if ran with no skips menaing you can generate alot more test quicker before using a single seed for production.
+- Very simple extrapolation
 ---
 
 - Open/enlarge the picture below and note how generations change with the more predictions and steps between them. We dont see as much quality loss but rather the direction of where the model goes. Thats not to say there isnt any quality loss but instead this method creates more variations in the image.
@@ -127,12 +127,3 @@ A: FSampler is complementary to:
 ---
 
 ## ALL TESTERS WELCOME! THANKS!!1
----
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G61M09C8)
-
-
-<a href="https://buymeacoffee.com/obisin">
-  <img width="110" height="31" alt="bmc-button" src="https://github.com/user-attachments/assets/a927697f-dabd-46ba-88ac-5b926a5e5a16" />
-</a>
-

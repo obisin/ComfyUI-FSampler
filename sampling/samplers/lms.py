@@ -1,6 +1,7 @@
 import torch
 from ..extrapolation import extrapolate_epsilon_linear, extrapolate_epsilon_richardson, extrapolate_epsilon_h4
 from ...comfy_copy.res4lyf_sampling import get_res4lyf_step_with_model
+from ..noise import get_eps_step_official
 from ..skip import should_skip_model_call, validate_epsilon_hat, decide_skip_adaptive
 from ..log import print_step_diag
 
@@ -14,7 +15,7 @@ def _ab2_update(x, dt, d_curr, d_prev=None):
 
 def sample_step_lms(model, noisy_latent, sigma_current, sigma_next, sigma_previous, s_in, extra_args,
                     epsilon_history, learning_ratio, smoothing_beta, predictor_type,
-                    step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2, anchor_interval=None, max_consecutive_skips=None):
+                    step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2, anchor_interval=None, max_consecutive_skips=None, official_comfy=False):
     x = noisy_latent
     if skip_stats is not None:
         skip_stats["total_steps"] += 1
@@ -104,23 +105,26 @@ def sample_step_lms(model, noisy_latent, sigma_current, sigma_next, sigma_previo
     sigma_up = None
     alpha_ratio = None
     if add_noise_ratio > 0.0 and float(sigma_next) > 0.0:
-        sigma_up, _s, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
-            model, sigma_current, sigma_next, add_noise_ratio, "hard"
-        )
-        target_sigma = sigma_down
+        if official_comfy:
+            sigma_up, sigma_down = get_eps_step_official(sigma_current, sigma_next, eta=add_noise_ratio)
+            target_sigma = sigma_down
+            alpha_ratio = None
+        else:
+            sigma_up, _s, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
+                model, sigma_current, sigma_next, add_noise_ratio, "hard"
+            )
+            target_sigma = sigma_down
 
     dt = target_sigma - sigma_current
     x = _ab2_update(x, dt, d_curr, d_prev)
     if add_noise_ratio > 0.0 and float(sigma_next) > 0.0 and float(sigma_up) > 0.0:
+        noise = torch.randn_like(x)
         if add_noise_type == "whitened":
-            noise = torch.randn_like(x)
             noise = (noise - noise.mean()) / (noise.std() + 1e-12)
-        else:
-            noise = torch.randn_like(x)
-        if alpha_ratio is not None and alpha_ratio is not True:
-            x = alpha_ratio * x + noise * sigma_up
-        else:
+        if official_comfy or alpha_ratio is None or alpha_ratio is True:
             x = x + noise * sigma_up
+        else:
+            x = alpha_ratio * x + noise * sigma_up
     if skip_stats is not None:
         skip_stats["model_calls"] += 1
         skip_stats["consecutive_skips"] = 0

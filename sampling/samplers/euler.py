@@ -5,9 +5,12 @@ from ..skip import should_skip_model_call, validate_epsilon_hat, decide_skip_ada
 from ..log import print_step_diag
 
 
+from ..noise import get_eps_step_official
+
+
 def sample_step_euler(model, noisy_latent, sigma_current, sigma_next, s_in, extra_args,
                       epsilon_history, learning_ratio, smoothing_beta, predictor_type,
-                      step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2, anchor_interval=None, max_consecutive_skips=None):
+                      step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2, anchor_interval=None, max_consecutive_skips=None, official_comfy=False):
     x = noisy_latent
 
     if skip_stats is not None:
@@ -98,19 +101,29 @@ def sample_step_euler(model, noisy_latent, sigma_current, sigma_next, s_in, extr
 
     # If adding noise (ancestral), follow res4lyf: adjust target sigma to sigma_down and add noise via alpha_ratio/sigma_up
     if add_noise_ratio > 0.0 and float(sigma_next) > 0.0 and not was_skipped:
-        sigma_up, _sigma_for_calc, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
-            model, sigma_current, sigma_next, add_noise_ratio, "hard"
-        )
-        dt = sigma_down - sigma_current
-        x = x + d * dt
-        # whitened Gaussian noise
-        if add_noise_type == "whitened":
+        if official_comfy:
+            sigma_up, sigma_down = get_eps_step_official(sigma_current, sigma_next, eta=add_noise_ratio)
+            dt = sigma_down - sigma_current
+            x = x + d * dt
             noise = torch.randn_like(x)
-            std = noise.std()
-            noise = (noise - noise.mean()) / (std + 1e-12)
-        else:  # gaussian
-            noise = torch.randn_like(x)
-        x = alpha_ratio * x + noise * sigma_up
+            if add_noise_type == "whitened":
+                noise = (noise - noise.mean()) / (noise.std() + 1e-12)
+            x = x + noise * sigma_up
+            alpha_ratio = None
+        else:
+            sigma_up, _sigma_for_calc, sigma_down, alpha_ratio = get_res4lyf_step_with_model(
+                model, sigma_current, sigma_next, add_noise_ratio, "hard"
+            )
+            dt = sigma_down - sigma_current
+            x = x + d * dt
+            # whitened Gaussian noise
+            if add_noise_type == "whitened":
+                noise = torch.randn_like(x)
+                std = noise.std()
+                noise = (noise - noise.mean()) / (std + 1e-12)
+            else:  # gaussian
+                noise = torch.randn_like(x)
+            x = alpha_ratio * x + noise * sigma_up
     else:
         dt = sigma_next - sigma_current
         x = x + d * dt
