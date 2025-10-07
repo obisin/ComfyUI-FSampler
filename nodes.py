@@ -403,7 +403,6 @@ class FSampler:
             adaptive_mode=adaptive_mode,
             smoothing_beta=smoothing_beta,
             skip_mode=skip_mode,
-            user_skip_indices=None,
             add_noise_ratio=add_noise_ratio,
             add_noise_type=add_noise_type,
             scheduler=scheduler,
