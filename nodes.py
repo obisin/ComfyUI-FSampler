@@ -290,7 +290,7 @@ class FSampler:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "steps": ("INT", {"default": 25, "min": 1, "max": 150}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
-                "scheduler": (FSAMPLER_AVAILABLE_SCHEDULERS, {"default": "fibonacci"}),
+                "scheduler": (FSAMPLER_AVAILABLE_SCHEDULERS, {"default": "simple"}),
                 "sampler": (["euler", "res_2m", "res_2s", "ddim", "dpmpp_2m", "dpmpp_2s", "lms", "res_multistep"], {"default": "euler"}),
                 "skip_mode": ([
                     "none",
