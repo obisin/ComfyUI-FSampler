@@ -9,7 +9,7 @@ by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) 
 ## Note:
 - currently only tested on flux, wan2.2 and qwen- happy for anyone to test and give feedback- I will test on otehrs later. 
 - Testing done on a 2080ti with loras and f8 and f16 models. 
-- The longer a single run on one model the better. Split model like Wan2.2 will see less benefit due to lower step count per model as this leads to less history to predict future values.
+- The longer a single run on one model the better.
 
 ## Overview
 - Training‑free acceleration that skips full model calls using predicted epsilon (noise) from recent REAL steps.
