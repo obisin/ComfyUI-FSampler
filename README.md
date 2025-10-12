@@ -6,10 +6,22 @@ mode that, per step, builds two predictions (e.g., h3 vs h2), compares their pre
 when that error is below a hardcoded tolerance. Predicted epsilons are validated and scaled by a universal learning stabilizer L, skips are bounded 
 by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) is unchanged.
 
-## Note:
-- currently only tested on flux, wan2.2 and qwen- happy for anyone to test and give feedback- I will test on otehrs later. 
-- Testing done on a 2080ti with loras and f8 and f16 models. 
-- The longer a single run on one model the better.
+## FSampler Changelog:
+
+## 2025-10-12
+### New Samplers Added
+
+- #### `res_multistep_ancestral`
+- #### `heun`
+- #### `gradient_estimation`
+
+### Adaptive Skip Modes
+- #### `grad_est`
+- #### `learn+grad_est`
+
+### Explicit Skip Indices with Predictor Selection
+-  Manual step selection with extrapolation method control (Good for low step  count workflows)
+- Take precise control over which steps to skip and how predictions are made using the `skip_indices` parameter (available in FSampler Advanced node).
 
 ## Overview
 - Training‑free acceleration that skips full model calls using predicted epsilon (noise) from recent REAL steps.
