@@ -3,7 +3,7 @@ import torch
 from ..comfy_copy.res4lyf_sampling import get_res4lyf_step_with_model
 import comfy.sample
 from .log import print_step_timing
-from .skip import _parse_hs_mode
+from .skip import _parse_hs_mode, parse_skip_indices_config
 from .samplers.euler import sample_step_euler
 from .samplers.res2m import sample_step_res_2m
 from .samplers.res2s import sample_step_res_2s
@@ -13,6 +13,9 @@ from .samplers.dpmpp_2s import sample_step_dpmpp_2s
 from .samplers.lms import sample_step_lms
 from .samplers.res_multistep import sample_step_res_multistep
 from .samplers.res_multistep_official import sample_step_res_multistep_official
+from .samplers.res_multistep_ancestral import sample_step_res_multistep_ancestral
+from .samplers.heun import sample_step_heun
+from .samplers.gradient_estimation import sample_step_gradient_estimation
 
 
 def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negative_conditioning,
@@ -21,7 +24,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                     scheduler=None, start_at_step=None, end_at_step=None, denoise=None,
                     debug=False, callback=None, protect_last_steps=4, protect_first_steps=2,
                     anchor_interval=None, max_consecutive_skips=None, use_no_grad=True,
-                    official_comfy=False):
+                    official_comfy=False, skip_indices: str = ""):
     """Orchestrates sampling with pluggable samplers and shared skip/learning/timing.
     """
 
@@ -65,6 +68,9 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                 # Adaptive skip controller state
                 "consecutive_skips": 0,
                 "last_anchor_step": -1,
+                # Explicit indices gating state
+                "explicit_streak": False,
+                "needed_learns": 2,
             }
 
             if debug:
@@ -106,12 +112,32 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                 pass
                 print(f"{'='*60}\n")
 
+            # Parse explicit skip indices early (indices bounded once total_steps is known)
+            explicit_predictor, explicit_indices = parse_skip_indices_config(skip_indices or "")
+            explicit_mode = len(explicit_indices) > 0
+
             res2m_prev_was_skipped = False
             res2m_noise_cooldown = 0
             res2m_prev_sigma_down = None
             resms_prev_sigma_down = None
             _t_start = time.time()
             total_steps = len(sigmas) - 1
+            # Determine effective modes and bound explicit indices
+            if explicit_mode:
+                # Bound and filter per-total-steps; also ensure we never include 0/1
+                explicit_indices = {i for i in explicit_indices if 0 <= i < total_steps and i >= 2}
+                if len(explicit_indices) == 0:
+                    explicit_mode = False
+            effective_skip_mode = ("none" if explicit_mode else skip_mode)
+            effective_adaptive_mode = ("none" if explicit_mode else adaptive_mode)
+            if explicit_mode:
+                # Override predictor used for learning/hints
+                predictor_type = explicit_predictor
+                if debug:
+                    print(f"Explicit Skip Mode: ON")
+                    print(f"  explicit_predictor: {explicit_predictor}")
+                    print(f"  explicit_indices: {sorted(list(explicit_indices))}")
+                    print(f"  disabled: skip_mode/adaptive/anchor/max_consecutive/protect_*")
             for step_index in range(total_steps):
                 sigma_current = sigmas[step_index]
                 sigma_next = sigmas[step_index + 1]
@@ -132,14 +158,14 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         prev_was_skipped=res2m_prev_was_skipped,
                         step_index=step_index,
                         total_steps=total_steps,
-                        adaptive_mode=adaptive_mode,
+                        adaptive_mode=effective_adaptive_mode,
                         smoothing_beta=smoothing_beta,
                         smoothed_error_ratio=smoothed_error_ratio,
                         learning_ratio=learning_ratio,
                         predictor_type=predictor_type,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -166,12 +192,14 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
                         debug=debug,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         protect_first_steps=protect_first_steps,
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "euler":
                     x, learning_ratio = sample_step_euler(
@@ -189,7 +217,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         total_steps=total_steps,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -197,6 +225,9 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
                         official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "ddim":
                     x, learning_ratio = sample_step_ddim(
@@ -214,7 +245,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         total_steps=total_steps,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -222,6 +253,9 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
                         official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "dpmpp_2m":
                     x, learning_ratio = sample_step_dpmpp_2m(
@@ -240,7 +274,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         total_steps=total_steps,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -248,6 +282,9 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
                         official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "dpmpp_2s":
                     x, learning_ratio = sample_step_dpmpp_2s(
@@ -265,7 +302,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         total_steps=total_steps,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -273,6 +310,8 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
                         official_comfy=official_comfy,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "lms":
                     x, learning_ratio = sample_step_lms(
@@ -291,7 +330,7 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         total_steps=total_steps,
                         add_noise_ratio=add_noise_ratio,
                         add_noise_type=add_noise_type,
-                        skip_mode=skip_mode,
+                        skip_mode=effective_skip_mode,
                         skip_stats=skip_stats,
                         protect_last_steps=protect_last_steps,
                         debug=debug,
@@ -299,70 +338,432 @@ def sample_fsampler(model_patcher, noise, sigmas, positive_conditioning, negativ
                         anchor_interval=anchor_interval,
                         max_consecutive_skips=max_consecutive_skips,
                         official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
+                    )
+                elif sampler == "heun":
+                    x, learning_ratio = sample_step_heun(
+                        model=model,
+                        noisy_latent=x,
+                        sigma_current=sigma_current,
+                        sigma_next=sigma_next,
+                        s_in=s_in,
+                        extra_args=extra_args,
+                        epsilon_history=epsilon_history,
+                        learning_ratio=learning_ratio,
+                        smoothing_beta=smoothing_beta,
+                        predictor_type=predictor_type,
+                        step_index=step_index,
+                        total_steps=total_steps,
+                        add_noise_ratio=add_noise_ratio,
+                        add_noise_type=add_noise_type,
+                        skip_mode=effective_skip_mode,
+                        skip_stats=skip_stats,
+                        protect_last_steps=protect_last_steps,
+                        debug=debug,
+                        protect_first_steps=protect_first_steps,
+                        anchor_interval=anchor_interval,
+                        max_consecutive_skips=max_consecutive_skips,
+                        official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
+                    )
+                elif sampler == "gradient_estimation":
+                    x, learning_ratio = sample_step_gradient_estimation(
+                        model=model,
+                        noisy_latent=x,
+                        sigma_current=sigma_current,
+                        sigma_next=sigma_next,
+                        sigma_previous=sigma_previous,
+                        s_in=s_in,
+                        extra_args=extra_args,
+                        epsilon_history=epsilon_history,
+                        learning_ratio=learning_ratio,
+                        smoothing_beta=smoothing_beta,
+                        predictor_type=predictor_type,
+                        step_index=step_index,
+                        total_steps=total_steps,
+                        add_noise_ratio=add_noise_ratio,
+                        add_noise_type=add_noise_type,
+                        skip_mode=effective_skip_mode,
+                        skip_stats=skip_stats,
+                        protect_last_steps=protect_last_steps,
+                        debug=debug,
+                        protect_first_steps=protect_first_steps,
+                        anchor_interval=anchor_interval,
+                        max_consecutive_skips=max_consecutive_skips,
+                        official_comfy=official_comfy,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
                     )
                 elif sampler == "res_multistep":
                     # Choose official vs res4lyf implementation
-                    if not official_comfy:
-                        x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
-                            model=model,
-                            noisy_latent=x,
-                            sigma_current=sigma_current,
-                            sigma_next=sigma_next,
-                            sigma_previous=sigma_previous,
-                            old_sigma_down=resms_prev_sigma_down,
-                            s_in=s_in,
-                            extra_args=extra_args,
-                            error_history=error_history,
-                            epsilon_history=epsilon_history,
-                            step_index=step_index,
-                            total_steps=total_steps,
-                            learning_ratio=learning_ratio,
-                            smoothing_beta=smoothing_beta,
-                            predictor_type=predictor_type,
-                            add_noise_ratio=add_noise_ratio,
-                            add_noise_type=add_noise_type,
-                            skip_mode=skip_mode,
-                            skip_stats=skip_stats,
-                            debug=debug,
-                            protect_last_steps=protect_last_steps,
-                            protect_first_steps=protect_first_steps,
-                            anchor_interval=anchor_interval,
-                            max_consecutive_skips=max_consecutive_skips,
-                        )
+                    if official_comfy:
+                        try:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                                explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                                explicit_predictor=(explicit_predictor if explicit_mode else None),
+                            )
+                        except TypeError:
+                            # Back-compat with older function signature
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                            )
                     else:
-                        x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
-                            model=model,
-                            noisy_latent=x,
-                            sigma_current=sigma_current,
-                            sigma_next=sigma_next,
-                            sigma_previous=sigma_previous,
-                            old_sigma_down=resms_prev_sigma_down,
-                            s_in=s_in,
-                            extra_args=extra_args,
-                            error_history=error_history,
-                            epsilon_history=epsilon_history,
-                            step_index=step_index,
-                            total_steps=total_steps,
-                            learning_ratio=learning_ratio,
-                            smoothing_beta=smoothing_beta,
-                            predictor_type=predictor_type,
-                            add_noise_ratio=add_noise_ratio,
-                            add_noise_type=add_noise_type,
-                            skip_mode=skip_mode,
-                            skip_stats=skip_stats,
-                            debug=debug,
-                            protect_last_steps=protect_last_steps,
-                            protect_first_steps=protect_first_steps,
-                            anchor_interval=anchor_interval,
-                            max_consecutive_skips=max_consecutive_skips,
-                        )
+                        try:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                                explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                                explicit_predictor=(explicit_predictor if explicit_mode else None),
+                            )
+                        except TypeError:
+                            # Back-compat with older function signature
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                            )
+                elif sampler == "res_multistep_ancestral":
+                    # Dedicated ancestral variant; always call the wrapper and continue
+                    x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_ancestral(
+                        model=model,
+                        noisy_latent=x,
+                        sigma_current=sigma_current,
+                        sigma_next=sigma_next,
+                        sigma_previous=sigma_previous,
+                        old_sigma_down=resms_prev_sigma_down,
+                        s_in=s_in,
+                        extra_args=extra_args,
+                        error_history=error_history,
+                        epsilon_history=epsilon_history,
+                        step_index=step_index,
+                        total_steps=total_steps,
+                        learning_ratio=learning_ratio,
+                        smoothing_beta=smoothing_beta,
+                        predictor_type=predictor_type,
+                        add_noise_ratio=add_noise_ratio,
+                        add_noise_type=add_noise_type,
+                        skip_mode=effective_skip_mode,
+                        skip_stats=skip_stats,
+                        debug=debug,
+                        protect_last_steps=protect_last_steps,
+                        protect_first_steps=protect_first_steps,
+                        anchor_interval=anchor_interval,
+                        max_consecutive_skips=max_consecutive_skips,
+                        official_comfy=official_comfy,
+                        adaptive_mode=effective_adaptive_mode,
+                        explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                        explicit_predictor=(explicit_predictor if explicit_mode else None),
+                    )
+                    continue
+                    if official_comfy:
+                        try:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                                explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                                explicit_predictor=(explicit_predictor if explicit_mode else None),
+                            )
+                        except TypeError:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                            )
+                    # else (removed duplicate)
+                        try:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                                explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                                explicit_predictor=(explicit_predictor if explicit_mode else None),
+                            )
+                        except TypeError:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                            )
+                        except TypeError:
+                            # Back-compat with older function signature
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep_official(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                            )
+                    else:
+                        try:
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                                explicit_skip_indices=(explicit_indices if explicit_mode else None),
+                                explicit_predictor=(explicit_predictor if explicit_mode else None),
+                            )
+                        except TypeError:
+                            # Back-compat with older function signature
+                            x, learning_ratio, resms_prev_sigma_down = sample_step_res_multistep(
+                                model=model,
+                                noisy_latent=x,
+                                sigma_current=sigma_current,
+                                sigma_next=sigma_next,
+                                sigma_previous=sigma_previous,
+                                old_sigma_down=resms_prev_sigma_down,
+                                s_in=s_in,
+                                extra_args=extra_args,
+                                error_history=error_history,
+                                epsilon_history=epsilon_history,
+                                step_index=step_index,
+                                total_steps=total_steps,
+                                learning_ratio=learning_ratio,
+                                smoothing_beta=smoothing_beta,
+                                predictor_type=predictor_type,
+                                add_noise_ratio=add_noise_ratio,
+                                add_noise_type=add_noise_type,
+                                skip_mode=effective_skip_mode,
+                                skip_stats=skip_stats,
+                                debug=debug,
+                                protect_last_steps=protect_last_steps,
+                                protect_first_steps=protect_first_steps,
+                                anchor_interval=anchor_interval,
+                                max_consecutive_skips=max_consecutive_skips,
+                                adaptive_mode=effective_adaptive_mode,
+                            )
 
                 sigma_previous = sigma_current
 
                 if callback is not None:
                     callback({'x': x, 'i': step_index, 'sigma': sigma_current, 'sigma_next': sigma_next, 'denoised': x})
 
-            if debug and skip_mode != "none":
+            if debug and (effective_skip_mode != "none" or explicit_mode):
                 total = skip_stats["total_steps"]
                 called = skip_stats["model_calls"]
                 skipped = skip_stats["skipped"]

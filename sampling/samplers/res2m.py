@@ -68,7 +68,7 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
             if debug:
                 print(f"res_2m step {step_index}: skip cancelled (ε̂ invalid: {reason}) hat_norm={hat_norm:.2e}, prev_norm={(prev_norm if prev_norm is not None else float('nan')):.2e}")
         else:
-            if len(epsilon_history) >= 3:
+            if len(epsilon_history) >= 3 and adaptive_mode in ("learning", "learn+grad_est"):
                 epsilon_current = epsilon_current / max(learning_ratio, 1e-8)
             denoised = x_0 + epsilon_current
             was_skipped = True
@@ -281,6 +281,24 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
             x = x_pre
             allow_noise = True
 
+        # Grad-estimation correction (post-integrator Euler-space tweak) on SKIP
+        if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est"):
+            try:
+                d_prev_ge = skip_stats.get("d_prev") if skip_stats is not None else None
+            except Exception:
+                d_prev_ge = None
+            if d_prev_ge is not None:
+                d_hat = -(epsilon_current) / (sigma_current + 1e-8)
+                dbar = (2.0 - 1.0) * (d_hat - d_prev_ge)
+                try:
+                    ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                except Exception:
+                    ratio = 0.0
+                if ratio > 0.25:
+                    dbar = dbar * (0.25 / ratio)
+                dt = target_sigma - sigma_current
+                x = x + dbar * dt
+
         # Ancestral noise add after integrator (ODE and RF)
         if allow_noise and add_noise_ratio_eff > 0.0 and float(sigma_next) > 0.0 and sigma_up is not None and float(sigma_up) > 0.0:
             if add_noise_type == "whitened":
@@ -300,6 +318,14 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
         if debug:
             eps_prev_norm = torch.norm(epsilon_previous).item()
             eps_curr_norm = torch.norm(epsilon_current).item()
+            if was_skipped and 'dbar' in locals() and isinstance(dbar, torch.Tensor):
+                try:
+                    d_hat_norm = float(torch.norm(-(epsilon_current) / (sigma_current + 1e-8)).item())
+                    dbar_norm = float(torch.norm(dbar).item())
+                    ratio_print = dbar_norm / (d_hat_norm + 1e-8)
+                except Exception:
+                    d_hat_norm = None; dbar_norm = 0.0; ratio_print = 0.0
+                print(f"res_2m step {step_index} [SKIP-APPLY]: d_norm={(d_hat_norm if d_hat_norm is not None else float('nan')):.2f}, dbar_norm={dbar_norm:.2f}, ratio={ratio_print:.2f}, L={learning_ratio:.4f}, mode={adaptive_mode}")
             if adaptive_mode != "none":
                 if error_ratio is None:
                     print(
@@ -343,6 +369,30 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
             else:
                 reason = "no-history reanchor"
             x = x_0 + h * epsilon_current
+            # Grad-estimation correction on Euler fallback during SKIP
+            if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est"):
+                try:
+                    d_prev_ge = skip_stats.get("d_prev") if skip_stats is not None else None
+                except Exception:
+                    d_prev_ge = None
+                if d_prev_ge is not None:
+                    d_hat = -(epsilon_current) / (sigma_current + 1e-8)
+                    dbar = (2.0 - 1.0) * (d_hat - d_prev_ge)
+                    try:
+                        ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                    except Exception:
+                        ratio = 0.0
+                    if ratio > 0.25:
+                        dbar = dbar * (0.25 / ratio)
+                    dt = target_sigma - sigma_current
+                    x = x + dbar * dt
+                    if debug:
+                        try:
+                            d_hat_norm = float(torch.norm(d_hat).item())
+                            dbar_norm = float(torch.norm(dbar).item())
+                        except Exception:
+                            d_hat_norm = None; dbar_norm = 0.0
+                        print(f"res_2m step {step_index} [SKIP-APPLY]: d_norm={(d_hat_norm if d_hat_norm is not None else float('nan')):.2f}, dbar_norm={dbar_norm:.2f}, ratio={ratio:.2f}, L={learning_ratio:.4f}, mode={adaptive_mode}")
             if add_noise_ratio_eff > 0.0 and float(sigma_next) > 0.0 and sigma_up is not None and float(sigma_up) > 0.0:
                 if add_noise_type == "whitened":
                     noise = torch.randn_like(x)
@@ -385,6 +435,14 @@ def sample_step_res_2m(model, noisy_latent, sigma_current, sigma_next, sigma_pre
 
     if not was_skipped:
         epsilon_history.append(epsilon_current)
+        # Update last REAL slope for grad_est
+        try:
+            d_real = -(epsilon_current) / (sigma_current + 1e-8)
+            if skip_stats is not None:
+                skip_stats["d_prev"] = d_real.detach()
+        except Exception:
+            if skip_stats is not None:
+                skip_stats["d_prev"] = d_real if 'd_real' in locals() else None
         if len(epsilon_history) >= 3:
             if predictor_type == "h4":
                 epsilon_hat = extrapolate_epsilon_h4(epsilon_history)

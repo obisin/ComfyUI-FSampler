@@ -44,6 +44,9 @@ def sample_step_res_multistep_official(
     protect_first_steps=2,
     anchor_interval=None,
     max_consecutive_skips=None,
+    adaptive_mode="none",
+    explicit_skip_indices=None,
+    explicit_predictor=None,
 ):
     """
     Official ComfyUI res_multistep implementation with FSampler skip integration.
@@ -62,8 +65,70 @@ def sample_step_res_multistep_official(
     phi1_fn = lambda t: torch.expm1(t) / t
     phi2_fn = lambda t: (phi1_fn(t) - 1.0) / t
 
-    # Decide skip
-    if skip_mode == "adaptive":
+    # Explicit skip indices take precedence (ignores protect windows); apply streak gating
+    was_skipped = False
+    if explicit_skip_indices is not None and isinstance(explicit_skip_indices, set) and step_index in explicit_skip_indices:
+        es = skip_stats.get("explicit_streak", False) if skip_stats is not None else False
+        nl = skip_stats.get("needed_learns", 2) if skip_stats is not None else 2
+        allowed_by_streak = es or (nl <= 0)
+        if allowed_by_streak and len(epsilon_history) >= 2:
+            pred = (explicit_predictor or "linear")
+            if pred == "h4" and len(epsilon_history) >= 4:
+                epsilon_hat = extrapolate_epsilon_h4(epsilon_history)
+            elif (pred in ("richardson", "h3")) and len(epsilon_history) >= 3:
+                epsilon_hat = extrapolate_epsilon_richardson(epsilon_history)
+            else:
+                epsilon_hat = extrapolate_epsilon_linear(epsilon_history)
+            prev_eps = epsilon_history[-1] if len(epsilon_history) >= 1 else None
+            ok, reason, hat_norm, prev_norm = validate_epsilon_hat(epsilon_hat, prev_eps)
+            if ok:
+                if len(epsilon_history) >= 3 and adaptive_mode in ("learning", "learn+grad_est"):
+                    epsilon_hat = epsilon_hat / max(learning_ratio, 1e-8)
+                denoised = x + epsilon_hat
+                was_skipped = True
+                if skip_stats is not None:
+                    skip_stats["skipped"] = skip_stats.get("skipped", 0) + 1
+                    skip_stats["consecutive_skips"] = skip_stats.get("consecutive_skips", 0) + 1
+                    skip_stats["explicit_streak"] = True
+                    skip_stats["needed_learns"] = 0
+                if debug:
+                    # Summary line consistent with Euler
+                    try:
+                        dt_val = float((sigma_next - sigma_current).item()) if hasattr(sigma_current, 'item') else float(sigma_next - sigma_current)
+                    except Exception:
+                        dt_val = float('nan')
+                    print(f"res_multistep_official step {step_index} [SKIPPED-explicit-{pred if pred != 'richardson' else 'h3'}]: e_norm={hat_norm:.2f}, L={learning_ratio:.4f}, dt={dt_val:.4f}")
+                    try:
+                        x_rms = float(torch.sqrt(torch.mean((denoised)**2)).item())
+                    except Exception:
+                        x_rms = None
+                    print_step_diag(
+                        sampler="res_multistep_official",
+                        step_index=step_index,
+                        sigma_current=sigma_current,
+                        sigma_next=sigma_next,
+                        target_sigma=sigma_next,
+                        sigma_up=None,
+                        alpha_ratio=None,
+                        h=None,
+                        c2=None,
+                        b1=None,
+                        b2=None,
+                        eps_norm=hat_norm,
+                        eps_prev_norm=float(torch.norm(prev_eps).item()) if prev_eps is not None else None,
+                        x_rms=x_rms,
+                        flags=f"SKIPPED-explicit-{pred if pred != 'richardson' else 'h3'}",
+                    )
+            else:
+                if debug:
+                    print(f"res_multistep_official step {step_index}: explicit skip cancelled (ε̂ invalid: {reason})")
+        else:
+            if debug:
+                reason = "need_two_learns_before_skip" if not (es or nl <= 0) else "insufficient_history"
+                print(f"res_multistep_official step {step_index}: explicit skip gated ({reason})")
+
+    # Decide skip (only if not explicitly skipped)
+    if (not was_skipped) and skip_mode == "adaptive":
         should_skip, epsilon_hat, meta = decide_skip_adaptive(
             epsilon_history=epsilon_history,
             step_index=step_index,
@@ -86,8 +151,7 @@ def sample_step_res_multistep_official(
         )
         epsilon_hat = None
 
-    was_skipped = False
-    if should_skip and skip_method is not None:
+    if (not was_skipped) and should_skip and skip_method is not None:
         # Extrapolate epsilon if not provided by adaptive
         if epsilon_hat is None:
             if skip_method == "richardson":
@@ -104,8 +168,8 @@ def sample_step_res_multistep_official(
             if debug:
                 print(f"res_multistep_official step {step_index}: skip cancelled (ε̂ invalid: {reason}) hat_norm={hat_norm:.2e}, prev_norm={(prev_norm if prev_norm is not None else float('nan')):.2e}")
         else:
-            # Apply learning ratio correction
-            if len(epsilon_history) >= 3:
+            # Apply learning ratio correction (only for learning or learn+grad_est modes)
+            if len(epsilon_history) >= 3 and adaptive_mode in ("learning", "learn+grad_est"):
                 epsilon_hat = epsilon_hat / max(learning_ratio, 1e-8)
             denoised = x + epsilon_hat
             was_skipped = True
@@ -119,12 +183,23 @@ def sample_step_res_multistep_official(
                 else:
                     print(f"res_multistep_official step {step_index} [SKIPPED-{skip_method}]: e_norm={hat_norm:.2f}, L={learning_ratio:.4f}")
 
-    if not should_skip:
+    if not was_skipped and not should_skip:
         denoised = model(x, sigma_current * s_in, **extra_args)
         if skip_stats is not None:
             skip_stats["model_calls"] += 1
             skip_stats["consecutive_skips"] = 0
             skip_stats["last_anchor_step"] = step_index
+            # Gating update: REAL call increments learns and may end explicit streak
+            try:
+                es = skip_stats.get("explicit_streak", False)
+                nl = skip_stats.get("needed_learns", 2)
+                if es:
+                    skip_stats["explicit_streak"] = False
+                    skip_stats["needed_learns"] = 1
+                else:
+                    skip_stats["needed_learns"] = max(0, int(nl) - 1)
+            except Exception:
+                pass
 
     # Ancestral step calculation
     sigma_down, sigma_up = _get_ancestral_step(sigma_current, sigma_next, eta=add_noise_ratio)
@@ -139,6 +214,32 @@ def sample_step_res_multistep_official(
         d = _to_d(x, sigma_current, denoised)
         dt = sigma_down - sigma_current
         x = x + d * dt
+        # Grad-estimation correction for SKIP steps (Euler-space)
+        if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
+            d_prev = skip_stats.get("d_prev")
+            if d_prev is not None:
+                d_hat = -(denoised - noisy_latent) / (sigma_current + 1e-8)
+                dbar = (2.0 - 1.0) * (d_hat - d_prev)
+                try:
+                    ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                except Exception:
+                    ratio = 0.0
+                if ratio > 0.25:
+                    dbar = dbar * (0.25 / ratio)
+                x = x + dbar * dt
+        # Grad-estimation correction for SKIP steps (Euler-space)
+        if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
+            d_prev = skip_stats.get("d_prev")
+            if d_prev is not None:
+                d_hat = -(denoised - noisy_latent) / (sigma_current + 1e-8)
+                dbar = (2.0 - 1.0) * (d_hat - d_prev)
+                try:
+                    ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                except Exception:
+                    ratio = 0.0
+                if ratio > 0.25:
+                    dbar = dbar * (0.25 / ratio)
+                x = x + dbar * dt
     else:
         # Second order multistep method using phi functions
         t = t_fn(sigma_current)
@@ -156,6 +257,34 @@ def sample_step_res_multistep_official(
 
         old_denoised = error_history[-2] if len(error_history) >= 2 else denoised
         x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+        # Post-integrator grad-estimation correction on SKIP
+        if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
+            d_prev = skip_stats.get("d_prev")
+            if d_prev is not None:
+                d_hat = -(denoised - noisy_latent) / (sigma_current + 1e-8)
+                dbar = (2.0 - 1.0) * (d_hat - d_prev)
+                try:
+                    ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                except Exception:
+                    ratio = 0.0
+                if ratio > 0.25:
+                    dbar = dbar * (0.25 / ratio)
+                dt2 = sigma_down - sigma_current
+                x = x + dbar * dt2
+        # Grad-estimation correction for SKIP steps (post-integrator Euler-space tweak)
+        if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
+            d_prev = skip_stats.get("d_prev")
+            if d_prev is not None:
+                d_hat = -(denoised - noisy_latent) / (sigma_current + 1e-8)
+                dbar = (2.0 - 1.0) * (d_hat - d_prev)
+                try:
+                    ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                except Exception:
+                    ratio = 0.0
+                if ratio > 0.25:
+                    dbar = dbar * (0.25 / ratio)
+                dt = sigma_down - sigma_current
+                x = x + dbar * dt
 
     # Noise addition (ancestral)
     if float(sigma_next) > 0 and add_noise_ratio > 0:
@@ -180,9 +309,29 @@ def sample_step_res_multistep_official(
                 learn_obs = (torch.norm(epsilon_pred) / (torch.norm(epsilon) + 1e-8)).item()
                 learning_ratio = smoothing_beta * learning_ratio + (1.0 - smoothing_beta) * learn_obs
                 learning_ratio = max(0.5, min(2.0, learning_ratio))
+        # Update last REAL slope for grad_est
+        try:
+            d_real = -(epsilon) / (sigma_current + 1e-8)
+            if skip_stats is not None:
+                skip_stats["d_prev"] = d_real.detach()
+        except Exception:
+            if skip_stats is not None:
+                skip_stats["d_prev"] = d_real if 'd_real' in locals() else None
 
     if debug and not was_skipped:
         e_norm = torch.norm(epsilon).item() if not was_skipped else None
-        print(f"res_multistep_official step {step_index}: e_norm={e_norm:.2f}, L={learning_ratio:.4f}, order={2 if old_sigma_down is not None and len(error_history) >= 2 else 1}")
+        try:
+            dt_print = float((sigma_down - sigma_current).item()) if add_noise_ratio > 0 and 'sigma_down' in locals() else float((sigma_next - sigma_current).item()) if hasattr(sigma_current,'item') else float(sigma_next - sigma_current)
+        except Exception:
+            dt_print = float('nan')
+        print(f"res_multistep_official step {step_index}: e_norm={e_norm:.2f}, dt={dt_print:.4f}, L={learning_ratio:.4f}, beta={smoothing_beta}, order={2 if old_sigma_down is not None and len(error_history) >= 2 else 1}")
+    elif debug and was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and 'dbar' in locals() and isinstance(dbar, torch.Tensor):
+        try:
+            d_hat_norm = float(torch.norm(-(denoised - noisy_latent) / (sigma_current + 1e-8)).item())
+            dbar_norm = float(torch.norm(dbar).item())
+            ratio_print = dbar_norm / (d_hat_norm + 1e-8)
+        except Exception:
+            d_hat_norm = None; dbar_norm = 0.0; ratio_print = 0.0
+        print(f"res_multistep_official step {step_index} [SKIP-APPLY]: d_norm={(d_hat_norm if d_hat_norm is not None else float('nan')):.2f}, dbar_norm={dbar_norm:.2f}, ratio={ratio_print:.2f}, L={learning_ratio:.4f}, mode={adaptive_mode}")
 
     return x, learning_ratio, sigma_down

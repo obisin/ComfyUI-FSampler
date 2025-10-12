@@ -66,7 +66,7 @@ class FSamplerAdvanced:
                 "steps": ("INT", {"default": 25, "min": 1, "max": 150}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
                 "scheduler": (FSAMPLER_AVAILABLE_SCHEDULERS, {"default": "simple"}),
-                "sampler": (["euler", "res_2m", "res_2s", "ddim", "dpmpp_2m", "dpmpp_2s", "lms", "res_multistep"], {
+                "sampler": (["euler", "res_2m", "res_2s", "ddim", "dpmpp_2m", "dpmpp_2s", "lms", "res_multistep", "res_multistep_ancestral", "heun", "gradient_estimation"], {
                     "default": "euler",
                     "tooltip": "Sampling method"
                 }),
@@ -82,7 +82,7 @@ class FSamplerAdvanced:
                     "max": 100,
                     "tooltip": "Number of final steps never skipped (quality safeguard)."
                 }),
-                "adaptive_mode": (["none", "learning"], {
+                "adaptive_mode": (["none", "learning", "grad_est", "learn+grad_est"], {
                     "default": "none",
                     "tooltip": "Weight adjustment: none=baseline weights only, learning=smoothed weight adaptation based on error history"
                 }),
@@ -106,6 +106,7 @@ class FSamplerAdvanced:
                     "default": "none",
                     "tooltip": "Skipping: hN/sK with N=history (2=linear,3=Richardson,4=cubic) and K=calls before skip. Supported: h2/s2..s6, h3/s3..s6, h4/s4..s6."
                 }),
+                "skip_indices": ("STRING", {"default": "", "multiline": False, "tooltip": "Explicit Skip Mode: indices to skip, e.g. 'h2, 3, 4, 7'. First hN selects predictor (defaults to h2). Indices are 0-based after slicing (start/end), 0/1 never skipped; final step may be. When non-empty, this overrides and nullifies other skip/adaptive/history controls."}),
                 "anchor_interval": ("INT", {"default": 4, "min": 0, "max": 100, "tooltip": "Absolute cadence: force a REAL call on every Nth step index counted from the end of the protected warmup (protect_first_steps). Set 0 to disable anchors. (adaptive only)"}),
                 "max_consecutive_skips": ("INT", {"default": 4, "min": 1, "max": 100, "tooltip": "Local cap: maximum back-to-back skips allowed; resets immediately after any REAL call. (adaptive only)"}),
                 # NOTE: Adaptive tuning parameters (intentionally NOT exposed yet).
@@ -137,7 +138,7 @@ class FSamplerAdvanced:
     CATEGORY = "sampling/custom_sampling"
 
     def sample(self, model, positive, negative, latent_image, seed, steps, cfg,
-               scheduler, sampler, adaptive_mode, smoothing_beta, skip_mode, anchor_interval, max_consecutive_skips, protect_first_steps, protect_last_steps, start_at_step, end_at_step, add_noise, noise_type, denoise, verbose, no_grad, official_comfy):
+               scheduler, sampler, adaptive_mode, smoothing_beta, skip_mode, skip_indices, anchor_interval, max_consecutive_skips, protect_first_steps, protect_last_steps, start_at_step, end_at_step, add_noise, noise_type, denoise, verbose, no_grad, official_comfy):
         # Build sigma schedule with a factory to mirror KSampler (Advanced) denoise semantics
         def _build_sigmas(n_steps: int):
             if scheduler == "bong_tangent":
@@ -258,6 +259,7 @@ class FSamplerAdvanced:
             adaptive_mode=adaptive_mode,
             smoothing_beta=smoothing_beta,
             skip_mode=skip_mode,
+            skip_indices=skip_indices,
             add_noise_ratio=add_noise,
             add_noise_type=noise_type,
             scheduler=scheduler,
@@ -291,7 +293,7 @@ class FSampler:
                 "steps": ("INT", {"default": 25, "min": 1, "max": 150}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
                 "scheduler": (FSAMPLER_AVAILABLE_SCHEDULERS, {"default": "simple"}),
-                "sampler": (["euler", "res_2m", "res_2s", "ddim", "dpmpp_2m", "dpmpp_2s", "lms", "res_multistep"], {"default": "euler"}),
+                "sampler": (["euler", "res_2m", "res_2s", "ddim", "dpmpp_2m", "dpmpp_2s", "lms", "res_multistep", "res_multistep_ancestral", "heun", "gradient_estimation"], {"default": "euler"}),
                 "skip_mode": ([
                     "none",
                     # History 2 (linear): K in 2..5

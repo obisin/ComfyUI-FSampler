@@ -8,8 +8,70 @@ from ..log import print_step_diag
 
 def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra_args,
                      epsilon_history, learning_ratio, smoothing_beta, predictor_type,
-                     step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", debug=False, protect_last_steps=4, protect_first_steps=2, skip_stats=None, anchor_interval=None, max_consecutive_skips=None, official_comfy=False):
+                     step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", debug=False, protect_last_steps=4, protect_first_steps=2, skip_stats=None, anchor_interval=None, max_consecutive_skips=None, official_comfy=False,
+                     explicit_skip_indices=None, explicit_predictor=None, adaptive_mode="none"):
     x = noisy_latent
+
+    # Explicit skip indices take precedence (ignores protect windows); apply streak gating
+    if explicit_skip_indices is not None and isinstance(explicit_skip_indices, set) and step_index in explicit_skip_indices:
+        es = skip_stats.get("explicit_streak", False) if skip_stats is not None else False
+        nl = skip_stats.get("needed_learns", 2) if skip_stats is not None else 2
+        allowed_by_streak = es or (nl <= 0)
+        if allowed_by_streak and len(epsilon_history) >= 2:
+            pred = (explicit_predictor or "linear")
+            if pred == "h4" and len(epsilon_history) >= 4:
+                epsilon_hat = extrapolate_epsilon_h4(epsilon_history)
+                tag = "explicit-h4"
+            elif (pred in ("richardson", "h3")) and len(epsilon_history) >= 3:
+                epsilon_hat = extrapolate_epsilon_richardson(epsilon_history)
+                tag = "explicit-h3"
+            else:
+                epsilon_hat = extrapolate_epsilon_linear(epsilon_history)
+                tag = "explicit-h2"
+            prev_eps = epsilon_history[-1] if len(epsilon_history) >= 1 else None
+            ok, reason, hat_norm, prev_norm = validate_epsilon_hat(epsilon_hat, prev_eps)
+            if ok:
+                if len(epsilon_history) >= 3:
+                    epsilon_hat = epsilon_hat / max(learning_ratio, 1e-8)
+                x0_hat = x + epsilon_hat
+                scale = (sigma_next / sigma_current)
+                x = x0_hat + scale * (x - x0_hat)
+                if skip_stats is not None:
+                    skip_stats["skipped"] = skip_stats.get("skipped", 0) + 1
+                    skip_stats["consecutive_skips"] = skip_stats.get("consecutive_skips", 0) + 1
+                    skip_stats["explicit_streak"] = True
+                    skip_stats["needed_learns"] = 0
+                if debug:
+                    print(f"ddim step {step_index} [SKIPPED-{tag}]: e_norm={hat_norm:.2f}, L={learning_ratio:.4f}")
+                    try:
+                        x_rms = float(torch.sqrt(torch.mean(x**2)).item())
+                    except Exception:
+                        x_rms = None
+                    print_step_diag(
+                        sampler="ddim",
+                        step_index=step_index,
+                        sigma_current=sigma_current,
+                        sigma_next=sigma_next,
+                        target_sigma=sigma_next,
+                        sigma_up=None,
+                        alpha_ratio=None,
+                        h=None,
+                        c2=None,
+                        b1=None,
+                        b2=None,
+                        eps_norm=hat_norm,
+                        eps_prev_norm=float(torch.norm(prev_eps).item()) if prev_eps is not None else None,
+                        x_rms=x_rms,
+                        flags=f"SKIPPED-{tag}",
+                    )
+                return x, learning_ratio
+            else:
+                if debug:
+                    print(f"ddim step {step_index}: explicit skip cancelled (ε̂ invalid: {reason}) hat_norm={hat_norm:.2e}")
+        else:
+            if debug:
+                reason = "need_two_learns_before_skip" if not (es or nl <= 0) else "insufficient_history"
+                print(f"ddim step {step_index}: explicit skip gated ({reason})")
 
     if skip_mode == "adaptive":
         should_skip, epsilon_hat, meta = decide_skip_adaptive(
@@ -47,11 +109,32 @@ def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra
             if debug:
                 print(f"ddim step {step_index}: skip cancelled (ε̂ invalid: {reason}) hat_norm={hat_norm:.2e}, prev_norm={(prev_norm if prev_norm is not None else float('nan')):.2e}")
         else:
-            if len(epsilon_history) >= 3:
+            if len(epsilon_history) >= 3 and adaptive_mode in ("learning", "learn+grad_est"):
                 epsilon_hat = epsilon_hat / max(learning_ratio, 1e-8)
             x0_hat = x + epsilon_hat
             scale = (sigma_next / sigma_current)
             x = x0_hat + scale * (x - x0_hat)
+            # Gradient-estimation correction (Euler-space) for DDIM skip
+            if adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
+                d_prev = skip_stats.get("d_prev")
+                if d_prev is not None:
+                    d_hat = -(epsilon_hat) / sigma_current
+                    dbar = (2.0 - 1.0) * (d_hat - d_prev)
+                    try:
+                        ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
+                    except Exception:
+                        ratio = 0.0
+                    if ratio > 0.25:
+                        dbar = dbar * (0.25 / ratio)
+                    dt = sigma_next - sigma_current
+                    x = x + dbar * dt
+                    if debug:
+                        try:
+                            d_norm = float(torch.norm(d_hat).item())
+                            dbar_norm = float(torch.norm(dbar).item())
+                        except Exception:
+                            d_norm = None; dbar_norm = 0.0
+                        print(f"ddim step {step_index} [SKIP-APPLY]: d_norm={(d_norm if d_norm is not None else float('nan')):.2f}, dbar_norm={dbar_norm:.2f}, ratio={ratio:.2f}, L={learning_ratio:.4f}, mode={adaptive_mode}")
             was_skipped = True
             if skip_stats is not None:
                 skip_stats["skipped"] += 1
@@ -105,6 +188,21 @@ def sample_step_ddim(model, noisy_latent, sigma_current, sigma_next, s_in, extra
             skip_stats["model_calls"] += 1
             skip_stats["consecutive_skips"] = 0
             skip_stats["last_anchor_step"] = step_index
+        # Update last REAL slope for grad_est
+        if skip_stats is not None:
+            try:
+                d_real = (x - denoised) / (sigma_current + 1e-8)
+                skip_stats["d_prev"] = d_real.detach()
+            except Exception:
+                pass
+            # Gating update: REAL call increments learns and may end streak
+            es = skip_stats.get("explicit_streak", False)
+            nl = skip_stats.get("needed_learns", 2)
+            if es:
+                skip_stats["explicit_streak"] = False
+                skip_stats["needed_learns"] = 1
+            else:
+                skip_stats["needed_learns"] = max(0, int(nl) - 1)
         if add_noise_ratio > 0.0 and float(sigma_next) > 0.0 and float(sigma_up) > 0.0:
             noise = torch.randn_like(x)
             if add_noise_type == "whitened":

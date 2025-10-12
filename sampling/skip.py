@@ -1,5 +1,6 @@
 import math
 import torch
+import re
 from .extrapolation import (
     extrapolate_epsilon_linear,
     extrapolate_epsilon_richardson,
@@ -66,6 +67,58 @@ def _normalize_skip_mode(skip_mode: str):
     if m == "adaptive":
         return "adaptive"
     return "none"
+
+
+def parse_skip_indices_config(text: str):
+    """Parse explicit skip indices configuration string.
+
+    Input examples:
+      - "h2, 3, 4, 7, 9"
+      - "3 6 8" (defaults to h2)
+      - "h4, 10, 12" (first hN wins)
+
+    Behavior:
+      - Tokenize on commas and/or whitespace; case-insensitive.
+      - First hN token wins among {h2,h3,h4}; default predictor is h2 when not specified.
+      - Collect distinct integer tokens into a set; drop invalids.
+      - Always filter out step indices 0 and 1 here; engine will further bound to total steps.
+
+    Returns: (predictor: 'linear'|'richardson'|'h4', indices: set[int]).
+             If no indices parsed, indices will be an empty set.
+    """
+    if not isinstance(text, str):
+        return "linear", set()
+
+    tokens = [t.strip() for t in re.split(r"[\s,]+", text.strip()) if t.strip()]
+    predictor = None
+    indices = set()
+
+    for tok in tokens:
+        tl = tok.lower()
+        # predictor selection (first hN wins)
+        if predictor is None and len(tl) >= 2 and tl[0] == 'h' and tl[1:].isdigit():
+            n = int(tl[1:])
+            if n >= 4:
+                predictor = "h4"
+            elif n == 3:
+                predictor = "richardson"
+            elif n == 2:
+                predictor = "linear"
+            continue
+        # integer index
+        if tl.lstrip("+-").isdigit():
+            try:
+                v = int(tl)
+            except Exception:
+                continue
+            # Filter out 0 and 1 here
+            if v >= 2:
+                indices.add(v)
+
+    if predictor is None:
+        predictor = "linear"
+
+    return predictor, indices
 
 
 def should_skip_model_call(error_ratio, step_index, total_steps, skip_mode, epsilon_history, protect_last_steps=4, protect_first_steps=2):
