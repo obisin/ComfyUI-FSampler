@@ -83,22 +83,88 @@ Method 2: Manual Download
 - Learning stabilizer L: scales predicted epsilon by 1/L on skipped steps; updates on REAL steps only.
 - Diagnostics: per‑step timing + concise line showing σ targets, h/weights (where relevant), epsilon norms, x_rms, and [RISK].
 
-## Visual Gallery (Placeholders)
-- Flux
-  - See  Image above
 
-- Wan22
-  - Baseline: images/wan22/baseline.png
-  - FSampler none: images/wan22/fsampler_none.png
-  - FSampler h2: images/wan22/fsampler_h2.png
-  - FSampler adaptive: images/wan22/fsampler_adaptive.png
+### Adaptive Skip Modes
 
-- Qwen
-  - Baseline: images/qwen/baseline.png
-  - FSampler none: images/qwen/fsampler_none.png
-  - FSampler h2: images/qwen/fsampler_h2.png
-  - FSampler adaptive: images/qwen/fsampler_adaptive.png
+All samplers now support four adaptive modes for intelligent step skipping:
 
+#### `none`
+- Standard operation without adaptive corrections
+- SKIP steps use cached predictions directly
+
+#### `learning`
+- Learns a stabilization factor `L` from REAL steps
+- Scales cached predictions by `1/L` on SKIP steps
+- L is learned via exponential moving average and clamped to [0.5, 2.0]
+- Helps adapt to model behavior across the denoising trajectory
+
+#### `grad_est`
+- Applies gradient estimation correction on SKIP steps only
+- Adds directional correction based on gradient differences
+- No L scaling applied
+- Best for maintaining prediction directionality
+
+#### `learn+grad_est`
+- **Combines both approaches** for maximum adaptivity
+- Applies L scaling AND gradient correction on SKIP steps
+- Recommended for best quality when using aggressive skip patterns
+
+### Explicit Skip Indices with Predictor Selection
+
+**New Feature**: Manual step selection with extrapolation method control
+
+Take precise control over which steps to skip and how predictions are made using the `skip_indices` parameter (available in FSampler Advanced node).
+
+#### Input Format
+
+Write configs like: `"h2, 3, 4, 7, 9"` or `"h4, 10, 12"` or simply `"3, 6, 8"`
+
+**Components:**
+- **Predictor token** (optional): `h2`, `h3`, or `h4` - specifies the extrapolation method
+- **Step indices**: Comma or space-separated integers (0-based)
+- **Empty/whitespace**: `""` or `"[]"` - ignored, uses other skip settings
+
+#### Automatic Fallback Ladder
+
+FSampler adapts when history is insufficient:
+
+```
+h4 requested → uses h4 if ≥4 history, else h3 if ≥3, else h2 if ≥2, else cancels skip
+h3 requested → uses h3 if ≥3 history, else h2 if ≥2, else cancels skip
+h2 requested → uses h2 if ≥2 history, else cancels skip
+```
+**Never falls below h2** - minimum 2 REAL epsilon history required for any skip.
+
+#### Index Rules and Constraints
+
+**Always Enforced:**
+- Steps **0 and 1 never skipped** (need initial history)
+- Final step **can be skipped** (explicit indices bypass protect windows)
+
+#### Example with Explanation
+
+**Low-step generation (5 steps):**
+```
+skip_indices = "4"
+```
+- Skip only step 4 using h2 (linear)
+- Steps 0,1,2,3 are REAL → saves ~20% compute
+
+
+#### Why Explicit Indices Matter
+
+**For Low Step Counts (4-8 steps):**
+- Modern models excel at 4-6 step generation
+- Each step has **outsized impact** on final quality
+- Early steps establish composition, final steps add detail
+- Manual control preserves the most critical steps
+
+
+**For Medium Step Counts (10-20 steps):**
+```
+Steps: 15
+skip_indices = "h2, 5, 7, 9, 11, 13"  # Skip ~40% with better extrapolation
+```
 
 ## Notes
 - h2/h3/h4 are conservative and deterministic; adaptive is aggressive and may show degradation on tough configs — validators and L minimize artifacts.
