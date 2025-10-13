@@ -285,20 +285,7 @@ def sample_step_res_multistep(
                         dbar = dbar * (0.25 / ratio)
                     dt = target_sigma - sigma_current
                     x = x + dbar * dt
-            # Post-integrator grad-estimation correction on SKIP
-            if was_skipped and adaptive_mode in ("grad_est", "learn+grad_est") and skip_stats is not None:
-                d_prev_ge = skip_stats.get("d_prev")
-                if d_prev_ge is not None:
-                    d_hat = -(denoised - x_0) / (sigma_current + 1e-8)
-                    dbar = (2.0 - 1.0) * (d_hat - d_prev_ge)
-                    try:
-                        ratio = float(torch.norm(dbar) / (torch.norm(d_hat) + 1e-8))
-                    except Exception:
-                        ratio = 0.0
-                    if ratio > 0.25:
-                        dbar = dbar * (0.25 / ratio)
-                    dt = target_sigma - sigma_current
-                    x = x + dbar * dt
+
 
     if add_noise_ratio > 0.0 and float(sigma_next) > 0.0 and sigma_up is not None and float(sigma_up) > 0.0:
         if add_noise_type == "whitened":
