@@ -199,9 +199,11 @@ def sample_step_gradient_estimation(model, noisy_latent, sigma_current, sigma_ne
                         x = x + noise * sigma_up
                     else:
                         x = alpha_ratio * x + noise * sigma_up
+                # Ensure x_rms is defined even if debug is False
+                x_rms = None
                 if debug:
                     # Summary line consistent with Euler
-                    print(f"gradient_est step {step_index} [SKIPPED-{tag}]: e_norm={hat_norm:.2f}, L={learning_ratio:.4f}, dt={(dt.item() if hasattr(dt, 'item') else float(dt)):.4f}")
+                    print(f"gradient_est step {step_index} [SKIPPED-{skip_method}]: e_norm={hat_norm:.2f}, L={learning_ratio:.4f}, dt={(dt.item() if hasattr(dt, 'item') else float(dt)):.4f}")
                     try:
                         x_rms = float(torch.sqrt(torch.mean(x**2)).item())
                     except Exception:
