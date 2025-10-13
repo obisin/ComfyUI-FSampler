@@ -11,6 +11,8 @@ def sample_step_gradient_estimation(model, noisy_latent, sigma_current, sigma_ne
                                     step_index, total_steps, add_noise_ratio=0.0, add_noise_type="whitened", skip_mode="none", skip_stats=None, debug=False, protect_last_steps=4, protect_first_steps=2, anchor_interval=None, max_consecutive_skips=None, official_comfy=False,
                                     explicit_skip_indices=None, explicit_predictor=None, ge_gamma: float = 2.0):
     x = noisy_latent
+    # Ensure commonly logged metrics are always defined
+    x_rms = None
 
     if skip_stats is not None:
         skip_stats["total_steps"] = skip_stats.get("total_steps", 0) + 1
