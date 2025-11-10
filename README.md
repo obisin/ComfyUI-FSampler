@@ -31,6 +31,14 @@ by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) 
 - Very simple extrapolation
 ---
 
+## IMPORTANT NOTE
+
+**Important Compatibility Information:**
+- The RES family samplers will not produce 1:1 parity with the official KSampler or ClownShark KSampler implementations- despite having 1:1 code
+- Even ComfyUI vs ClownShark produce different results, due to environment variables and implementation details
+- Simple samplers like Euler will have 1:1 parity across implementations
+---
+
 - Open/enlarge the picture below and note how generations change with the more predictions and steps between them. We dont see as much quality loss but rather the direction of where the model goes. Thats not to say there isnt any quality loss but instead this method creates more variations in the image.
 - All tests were done using comfy cache to prevent time distortions and create a fairer test. This means that model loading time i sthe same for each generation. If you do tests please do the same.
 
