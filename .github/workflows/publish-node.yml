@@ -1,0 +1,31 @@
+name: Publish Node to Comfy Registry
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pyproject.toml'
+
+jobs:
+  publish-node:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install comfy-cli
+        run: |
+          pip install comfy-cli
+
+      - name: Publish to registry
+        env:
+          COMFY_API_KEY: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: |
+          comfy node publish
