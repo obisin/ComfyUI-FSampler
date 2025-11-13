@@ -1,3 +1,7 @@
+
+[![arXiv](https://img.shields.io/badge/arXiv-2511.09180-b31b1b.svg)](https://arxiv.org/abs/2511.09180)
+
+
 ## **FSampler for ComfyUI — Fast Skips via Epsilon Extrapolation**
 
 FSampler is a training‑free, sampler‑agnostic acceleration layer for diffusion sampling that reduces model calls by predicting each step’s epsilon  
