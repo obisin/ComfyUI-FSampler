@@ -72,6 +72,9 @@ def sample_step_euler(model, noisy_latent, sigma_current, sigma_next, s_in, extr
                         x_rms=x_rms,
                         flags=f"SKIPPED-{skip_method}",
                     )
+            else:
+                if debug:
+                    print(f"euler step {step_index}: skip rejected by validate_epsilon_hat (reason={reason})")
         else:
             if debug:
                 reason = "need_two_learns_before_skip" if not (es or nl <= 0) else "insufficient_history"
@@ -231,6 +234,7 @@ def sample_step_euler(model, noisy_latent, sigma_current, sigma_next, s_in, extr
                     learning_ratio = 0.5
                 elif learning_ratio > 2.0:
                     learning_ratio = 2.0
+                # (no aggregation; keep original verbose-only behavior)
     # Update last REAL slope for grad_est modes
     if skip_stats is not None and not was_skipped:
         try:

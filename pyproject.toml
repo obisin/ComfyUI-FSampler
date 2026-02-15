@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-FSampler"
 description = "FSampler is a training-free, sampler-agnostic acceleration layer for diffusion sampling that reduces model calls by predicting each step's epsilon (noise) from recent real calls. Provides fixed history modes (h2/h3/h4) and adaptive mode for 40-60%+ speedup."
-version = "1.0.2"
+version = "1.5.0"
 license = { text = "GPL-3.0-only" }
 
 [project.urls]
@@ -20,4 +20,6 @@ display_name = "FSampler Advanced"
 id = "FSampler"
 display_name = "FSampler"
 
-
+[[tool.comfy.nodelist]]
+id = "FSamplerSelect"
+display_name = "FSampler Select"

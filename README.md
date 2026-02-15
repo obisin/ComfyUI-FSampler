@@ -11,17 +11,29 @@ when that error is below a hardcoded tolerance. Predicted epsilons are validated
 by guard rails, and the sampler math (Euler, RES 2M/2S, DDIM, DPM++ 2M/2S, LMS) is unchanged.
 
 ## FSampler Changelog:
+## 2026-01-01
 
-## 2025-10-12
-### New Samplers Added
+## v1.5.0
+### Sigma-Aware Extrapolation
+- New `sigma_aware` toggle (FSampler Advanced / FSampler Select) — uses actual sigma coordinates for Lagrange interpolation
+- Improves skip prediction accuracy with non-uniform schedulers (bong_tangent, karras, exponential, beta, etc.)
+- Enabled by default in the simple FSampler node
 
-- #### `res_multistep_ancestral`
-- #### `heun`
-- #### `gradient_estimation`
+### Denoised Extrapolation
+- New `extrapolate_denoised` toggle — extrapolates the model's denoised (clean image) output instead of epsilon
+- Denoised converges smoothly toward the final image, can produce more stable skip predictions
+- Enabled by default in the simple FSampler node
+- Composes with sigma_aware (orthogonal: sigma_aware controls weights, denoised controls what quantity is extrapolated)
 
-### Adaptive Skip Modes
-- #### `grad_est`
-- #### `learn+grad_est`
+
+### New Node: FSampler Select
+- Outputs `SAMPLER` + `SIGMAS` for use with ComfyUI's **SamplerCustom** (KSamplerCustom) node
+- Lets you plug FSampler's skip-aware sampling into the standard modular workflow alongside any guider (CFGGuider, DualCFGGuider, BasicGuider, etc.)
+- Wire `sampler` → SamplerCustom's sampler slot, `sigmas` → SamplerCustom's sigmas slot
+- All FSampler skip/adaptive controls available; model/conditioning/cfg/noise handled by SamplerCustom
+
+### Live Preview
+- FSampler and FSampler Advanced now show live image previews during sampling (Latent2RGB, auto-enabled)
 
 ### Explicit Skip Indices with Predictor Selection
 -  Manual step selection with extrapolation method control (Good for low step  count workflows)
@@ -78,7 +90,7 @@ Method 2: Manual Download
 ## Usage (ComfyUI)
 
 - For quick usage start with the Fsampler rather than the FSampler Advanced as the simpler version only need noise and adaption mode to operate.
-- Swap with your normal KSampler node. 
+- Swap with your normal KSampler node.
 
 1. Add the **FSampler** node (or **FSampler Advanced** for more control)
 2. Choose your **sampler** and **scheduler** as usual
@@ -89,6 +101,50 @@ Method 2: Manual Download
    - `h4` — very conservative, ~12% speedup
    - `adaptive` — aggressive, 40-60%+ speedup (may degrade on tough configs)
 4. Adjust **protect_first_steps** / **protect_last_steps** if needed (defaults are usually fine)
+
+### FSampler Select (Modular / KSamplerCustom)
+
+For advanced workflows using ComfyUI's modular sampling system:
+
+1. Add **FSampler Select** — configure your sampler, scheduler, steps, and skip settings
+2. Add **SamplerCustom** (ComfyUI's KSamplerCustom node)
+3. Wire FSampler Select's `sampler` output → SamplerCustom's `sampler` input
+4. Wire FSampler Select's `sigmas` output → SamplerCustom's `sigmas` input
+5. Wire your model, positive/negative conditioning, cfg, and latent into SamplerCustom as normal
+
+This lets you use FSampler with any guider (CFGGuider, DualCFGGuider, BasicGuider) and the rest of the modular sampling ecosystem.
+
+## Extrapolation Settings (v1.5.0)
+
+FSampler Advanced and FSampler Select expose two new boolean toggles that can help reduce prediction drift on skipped steps. Both are enabled by default in the simple FSampler node.
+
+### Sigma-Aware Extrapolation (`sigma_aware`)
+
+Standard extrapolation assumes steps are uniformly spaced. Many schedulers (bong_tangent, karras, exponential, beta, etc.) have highly non-uniform spacing — dense in some regions, sparse in others. With uniform assumptions, the Lagrange basis weights can be wrong and predictions may drift.
+
+When `sigma_aware` is enabled, FSampler uses the actual sigma values as coordinates for Lagrange interpolation. This can give more accurate polynomial weights when scheduler spacing is non-uniform.
+
+- **Best for:** non-uniform schedulers (bong_tangent, karras, exponential, beta)
+- **No effect on:** uniform schedulers (normal) — weights are identical either way
+- **Default:** OFF in Advanced/Select, ON in simple FSampler
+
+### Denoised Extrapolation (`extrapolate_denoised`)
+
+Standard FSampler extrapolates **epsilon** (noise prediction) = `denoised - x`. Epsilon depends on both the model's output AND the changing noisy latent `x`, which can introduce variability from both sources.
+
+When `extrapolate_denoised` is enabled, FSampler extrapolates the model's **denoised** output directly — its best guess at the clean image. Denoised tends to converge more smoothly toward the final image as noise decreases, which can make it a more stable quantity to extrapolate and may reduce prediction drift. The predicted denoised is then converted back to epsilon for the sampler.
+
+- **Orthogonal to sigma_aware:** sigma_aware controls interpolation weights, denoised controls what quantity is extrapolated. Both can be used together.
+- **Default:** OFF in Advanced/Select, ON in simple FSampler
+
+### Recommended Combinations
+
+| Setting | Best For |
+|---------|----------|
+| Both OFF | Baseline comparison, uniform schedulers with simple samplers |
+| `sigma_aware` only | Non-uniform schedulers where epsilon extrapolation already works well |
+| `extrapolate_denoised` only | Any scheduler where skip quality needs improvement |
+| Both ON (simple FSampler default) | Generally good results, especially with non-uniform schedulers |
 
 ## Quality & Safety
 - Validators: finite checks, magnitude clamp vs history, cosine vs last REAL epsilon.
