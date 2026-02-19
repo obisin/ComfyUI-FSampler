@@ -8,23 +8,20 @@ import latent_preview
 from comfy.cli_args import args, LatentPreviewMethod
 
 def _make_safe_preview_callback(model_or_patcher, total_steps, x0_output_dict=None):
-    """Create a preview callback that can't crash sampling."""
-    old_method = args.preview_method
-    if args.preview_method == LatentPreviewMethod.NoPreviews:
-        args.preview_method = LatentPreviewMethod.Latent2RGB
-    try:
-        inner_cb = latent_preview.prepare_callback(model_or_patcher, total_steps, x0_output_dict)
-    finally:
-        args.preview_method = old_method
-
+    """Create a preview callback that respects ComfyUI's preview setting."""
     pbar = comfy.utils.ProgressBar(total_steps)
+
+    if args.preview_method == LatentPreviewMethod.NoPreviews:
+        def safe_callback(step, x0, x, total):
+            pbar.update_absolute(step + 1, total)
+        return safe_callback
+
+    inner_cb = latent_preview.prepare_callback(model_or_patcher, total_steps, x0_output_dict)
 
     def safe_callback(step, x0, x, total):
         try:
             inner_cb(step, x0, x, total)
         except Exception:
-            # Preview failed (e.g. VHS monkey-patch + unsupported latent format)
-            # Fall back to progress bar only
             pbar.update_absolute(step + 1, total)
     return safe_callback
 from .comfy_copy import k_diffusion_sampling
